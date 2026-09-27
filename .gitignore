@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.db
+backend/uploaded_skills/*.py
+!backend/uploaded_skills/.gitkeep
+.env
+
+# Node
+node_modules/
+.next/
+out/
+.env.local
+
+# OS
+.DS_Store
+tsconfig.tsbuildinfo
