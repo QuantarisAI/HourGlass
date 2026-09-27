@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     google_api_key: str = ""
     google_genai_use_vertexai: bool = False
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-3.8-flash"
 
     database_url: str = "sqlite:///./hourglass.db"
 
