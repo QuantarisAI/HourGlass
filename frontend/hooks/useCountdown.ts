@@ -2,17 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 
+export interface CountdownSegment {
+  value: number;
+  unit: string;
+  pad: number;
+}
+
 export interface CountdownParts {
   msRemaining: number;
-  years: number;
-  months: number;
-  weeks: number;
-  days: number;
-  hours: number;
-  minutes: number;
-  seconds: number;
-  milliseconds: number;
-  label: string; // adaptive human-readable string
+  isOverdue: boolean;
+  /** Ordered, leading-zero-suppressed big units (y/mo/w/d) followed by an
+   * always-present, always-ticking h/m/s/ms tail. */
+  segments: CountdownSegment[];
 }
 
 const MS = 1;
@@ -43,38 +44,36 @@ function computeParts(msRemaining: number): CountdownParts {
   rem -= seconds * SEC;
   const milliseconds = Math.floor(rem);
 
-  let label: string;
-  if (abs >= YEAR) {
-    label = `${years}y ${months}mo ${days}d`;
-  } else if (abs >= MONTH) {
-    label = `${months}mo ${weeks}w ${days % 7}d`;
-  } else if (abs >= WEEK) {
-    label = `${weeks}w ${days % 7}d ${hours}h`;
-  } else if (abs >= DAY) {
-    label = `${days}d ${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
-      seconds
-    ).padStart(2, "0")}`;
-  } else {
-    label = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
-      seconds
-    ).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+  const segments: CountdownSegment[] = [];
+  let bigUnitShown = false;
+
+  if (years > 0) {
+    segments.push({ value: years, unit: "y", pad: 1 });
+    bigUnitShown = true;
+  }
+  if (bigUnitShown || months > 0) {
+    segments.push({ value: months, unit: "mo", pad: 1 });
+    bigUnitShown = true;
+  }
+  if (bigUnitShown || weeks > 0) {
+    segments.push({ value: weeks, unit: "w", pad: 1 });
+    bigUnitShown = true;
+  }
+  if (bigUnitShown || days > 0) {
+    segments.push({ value: days, unit: "d", pad: 1 });
   }
 
-  if (msRemaining <= 0) {
-    label = `OVERDUE by ${label}`;
-  }
+  // Hours/minutes/seconds/milliseconds always show, so the clock is always
+  // visibly live no matter how far out the deadline is.
+  segments.push({ value: hours, unit: "h", pad: 2 });
+  segments.push({ value: minutes, unit: "m", pad: 2 });
+  segments.push({ value: seconds, unit: "s", pad: 2 });
+  segments.push({ value: milliseconds, unit: "ms", pad: 3 });
 
   return {
     msRemaining,
-    years,
-    months,
-    weeks,
-    days,
-    hours,
-    minutes,
-    seconds,
-    milliseconds,
-    label,
+    isOverdue: msRemaining <= 0,
+    segments,
   };
 }
 

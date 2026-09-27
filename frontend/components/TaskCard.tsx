@@ -4,10 +4,35 @@ import { useCountdown } from "@/hooks/useCountdown";
 import { urgencyBand, urgencyStyles } from "@/lib/priority";
 import { Task } from "@/lib/types";
 
+function CountdownClock({ deadline }: { deadline: string }) {
+  const countdown = useCountdown(deadline);
+
+  return (
+    <div className="mt-3 flex flex-wrap items-end gap-1.5">
+      {countdown.isOverdue && (
+        <span className="mr-1 self-center rounded bg-red-700 px-1.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white">
+          Overdue
+        </span>
+      )}
+      {countdown.segments.map((seg, i) => (
+        <div key={i} className="flex flex-col items-center">
+          <span className="rounded-md bg-black/30 px-1.5 py-0.5 font-mono text-lg font-bold tabular-nums leading-none">
+            {String(seg.value).padStart(seg.pad, "0")}
+          </span>
+          <span className="mt-0.5 text-[9px] uppercase tracking-wide opacity-60">{seg.unit}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function TaskCard({ task }: { task: Task }) {
-  const countdown = useCountdown(task.deadline);
-  const band = task.status === "completed" ? "calm" : urgencyBand(countdown.msRemaining);
-  const style = task.status === "completed" ? "border-green-600 bg-green-950/20 text-green-100" : urgencyStyles[band];
+  const deadlineMs = new Date(task.deadline).getTime();
+  const band = task.status === "completed" ? "calm" : urgencyBand(deadlineMs - Date.now());
+  const style =
+    task.status === "completed"
+      ? "border-green-600 bg-green-950/20 text-green-100"
+      : urgencyStyles[band];
 
   return (
     <div className={`rounded-xl border p-4 shadow-sm transition-colors ${style}`}>
@@ -26,15 +51,10 @@ export function TaskCard({ task }: { task: Task }) {
         Deadline: {new Date(task.deadline).toLocaleString()}
       </p>
 
-      {task.status !== "completed" && (
-        <div className="mt-3 font-mono text-2xl tabular-nums">{countdown.label}</div>
-      )}
+      {task.status !== "completed" && <CountdownClock deadline={task.deadline} />}
 
       {band === "urgent" && task.status !== "completed" && (
-        <p className="mt-1 text-xs font-semibold uppercase tracking-wide">⚠ Due within 24 hours</p>
-      )}
-      {band === "overdue" && task.status !== "completed" && (
-        <p className="mt-1 text-xs font-semibold uppercase tracking-wide">⛔ Overdue</p>
+        <p className="mt-2 text-xs font-semibold uppercase tracking-wide">⚠ Due within 24 hours</p>
       )}
     </div>
   );
