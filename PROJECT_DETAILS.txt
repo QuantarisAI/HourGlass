@@ -1,0 +1,301 @@
+================================================================================
+HOURGLASS — PROJECT DETAILS
+================================================================================
+Last updated: 2026-09-28
+Repo: https://github.com/QuantarisAI/HourGlass
+Branch: claude/trusting-bohr-p7xa7t
+
+--------------------------------------------------------------------------------
+1. WHAT THIS APPLICATION IS
+--------------------------------------------------------------------------------
+HourGlass is a chat-driven deadline / productivity tracker. Instead of filling
+out a form to add a task, you type (or speak) a plain-English instruction —
+e.g. "Add a challenge called Kaggle Sprint due 30 September 6pm" or "there is
+a Kaggle competition by Google called Gemma, set timer 40 days" — and an
+LLM agent (Gemini, via Google's Agent Development Kit / ADK) understands the
+intent and calls the right tool to create, update, complete, or delete a
+task. Every task shows up as a card on a dashboard, sorted with the nearest
+deadline first, with a live countdown clock ticking down to the millisecond.
+As deadlines approach, cards change color (calm blue -> amber -> red/pulsing)
+and the app fires free browser notifications at configurable checkpoints
+before the deadline (24h / 1h / 10min by default, plus an overdue alert).
+
+Core idea: ONE input surface (the chat box, typed or spoken) drives every
+mutation. There is no separate "new task" form.
+
+--------------------------------------------------------------------------------
+2. KEY FEATURES
+--------------------------------------------------------------------------------
+- Chat-only task management: create / edit deadline / complete / delete / list,
+  all via natural language through a Gemini-backed agent.
+- Voice input: click the mic, speak your instruction; browser's built-in Web
+  Speech API converts speech to text, which is sent through the same chat
+  pipeline as typed text (free, no API key needed for this part).
+- Live countdown clock per task card: shows years/months/weeks/days as
+  applicable, and ALWAYS shows a ticking hours:minutes:seconds.milliseconds
+  tail, updated ~30 times/second, rendered as individual digit boxes.
+- Deadline-based sorting and urgency highlighting: cards auto-sort soonest
+  first; color/urgency band changes as the deadline nears (>7d calm blue,
+  1-7d amber, <24h red + pulsing, overdue flagged).
+- Free browser notifications: native OS notifications fire while a tab is
+  open, no backend push infrastructure required.
+- Optional free mobile push via ntfy.sh (no signup) — backend can POST
+  reminders to a topic you subscribe to in the ntfy phone app. Firebase Cloud
+  Messaging and Telegram Bot API are documented as alternatives.
+- Uploadable "skills": drop a Python file defining a function into the chat
+  dock's upload button, and it becomes a new tool the agent can call —
+  extends what the assistant can do without redeploying the backend.
+- Offline fallback: if no Gemini API key is configured yet, a lightweight
+  regex-based parser handles basic commands (add/complete/delete/list) so
+  the app is usable immediately; once a key is added, Gemini takes over and
+  understands arbitrary free-form phrasing.
+
+--------------------------------------------------------------------------------
+3. ARCHITECTURE OVERVIEW
+--------------------------------------------------------------------------------
+Two independent services:
+
+  frontend/   Next.js 16 (App Router, TypeScript, Tailwind CSS)
+              - Dashboard UI, chat/voice dock, browser notifications
+              - Talks to the backend only over HTTP (fetch), via
+                NEXT_PUBLIC_API_BASE
+
+  backend/    FastAPI (Python) + Google ADK agent ("HourGlassAgent")
+              - REST CRUD for tasks
+              - /api/chat: the natural-language entry point (Gemini agent
+                or fallback parser)
+              - /api/skills: upload extra agent tools
+              - SQLAlchemy ORM over SQLite (dev) / Postgres (Cloud SQL, prod)
+
+They communicate purely over HTTP/JSON — the frontend has no direct DB
+access and no server-side logic beyond calling the backend's REST API. This
+means the frontend pieces can be lifted into a different app/page as long as
+that app can reach the backend's base URL.
+
+--------------------------------------------------------------------------------
+4. BACKEND — FILE-BY-FILE
+--------------------------------------------------------------------------------
+backend/
+  requirements.txt          fastapi, uvicorn, sqlalchemy, pydantic-settings,
+                             httpx, google-adk, google-genai, psycopg2-binary,
+                             python-multipart, python-dateutil
+  Dockerfile                Container build for Cloud Run / any Docker host
+  .env.example              Template for backend/.env (see section 6)
+
+  app/main.py                FastAPI app instance, CORS middleware, DB init
+                              on startup, mounts the 3 routers below.
+
+  app/core/config.py         Settings class (pydantic-settings) reading
+                              backend/.env: GOOGLE_API_KEY,
+                              GOOGLE_GENAI_USE_VERTEXAI, GEMINI_MODEL
+                              (default gemini-3.8-flash), DATABASE_URL,
+                              NTFY_TOPIC, CORS_ORIGINS.
+
+  app/db/database.py         SQLAlchemy engine + session factory + Base.
+                              connect_args auto-adjusts for SQLite.
+                              init_db() creates tables on startup.
+  app/db/models.py           Task ORM model: id (uuid), title, description,
+                              deadline (timezone-aware datetime), status
+                              (active/completed enum), reminder_offsets_minutes
+                              (csv string, default "1440,60,10" = 24h/1h/10m),
+                              created_at, updated_at.
+
+  app/schemas/task.py         Pydantic TaskCreate / TaskUpdate / TaskOut.
+  app/schemas/chat.py          Pydantic ChatRequest / ChatResponse.
+
+  app/api/routes/tasks.py     REST CRUD:
+                              GET    /api/tasks
+                              POST   /api/tasks
+                              PATCH  /api/tasks/{id}
+                              DELETE /api/tasks/{id}
+  app/api/routes/chat.py      POST /api/chat — routes to Gemini/ADK agent
+                              if GOOGLE_API_KEY set, else the fallback parser.
+  app/api/routes/skills.py    GET /api/skills (list uploaded), POST
+                              /api/skills/upload (multipart file upload).
+
+  app/agents/task_agent.py    Builds a Google ADK Agent per request bound to
+                              that request's DB session, with 5 tool
+                              functions: create_task, list_tasks,
+                              update_task_deadline, complete_task,
+                              delete_task. Runs via ADK's Runner +
+                              InMemorySessionService. Also loads any
+                              uploaded skills as extra tools.
+  app/agents/skill_loader.py  Dynamically imports .py files from
+                              backend/uploaded_skills/, wraps a module's
+                              `run(**kwargs)` function (with SKILL_NAME /
+                              SKILL_DESCRIPTION) as an agent tool.
+                              SECURITY NOTE: this executes arbitrary
+                              uploaded Python — fine for a single-operator
+                              deployment, do not expose publicly without
+                              auth + sandboxing.
+  app/agents/fallback_parser.py  Regex-based command parser used only when
+                              no GOOGLE_API_KEY is set. Understands:
+                              "add <title> due <date>" (absolute date, or
+                              relative like "in 40 days"), "complete
+                              <title>", "delete <title>", "list tasks".
+
+  app/services/task_service.py         DB CRUD helpers used by both the
+                                        REST routes and the agent tools.
+  app/services/notification_service.py  POSTs reminders to ntfy.sh if
+                                        NTFY_TOPIC is configured.
+
+  uploaded_skills/            Drop zone for uploaded skill .py files
+                              (gitignored except .gitkeep).
+
+--------------------------------------------------------------------------------
+5. FRONTEND — FILE-BY-FILE
+--------------------------------------------------------------------------------
+frontend/
+  package.json                Next.js 16.3.6, React 19.3.0, Tailwind CSS 3.
+  tailwind.config.ts           Urgency color tokens (calm/warn/urgent) +
+                              pulse-urgent keyframe animation.
+  .env.example                NEXT_PUBLIC_API_BASE (backend URL).
+
+  app/layout.tsx               Root HTML layout, page metadata.
+  app/globals.css              Tailwind base + dark background.
+  app/page.tsx                 The single dashboard page: fetches tasks
+                              every 5s, sorts by deadline ascending, renders
+                              a TaskCard grid (active + a separate completed
+                              section) alongside the ChatDock, and mounts
+                              NotificationManager.
+
+  components/TaskCard.tsx      One task's card: title, description,
+                              deadline, live CountdownClock (segmented
+                              digit boxes), urgency border/background color,
+                              "DONE" badge if completed.
+  components/ChatDock.tsx      The chat panel: message history, text input,
+                              mic button (Web Speech API for voice-to-text),
+                              "+Upload skill" file picker, sends messages to
+                              POST /api/chat and refreshes the task list on
+                              reply.
+  components/NotificationManager.tsx  Headless component: requests
+                              Notification permission once, polls the task
+                              list every 15s, and fires a browser
+                              Notification at each task's configured
+                              reminder offsets and at the overdue point.
+                              Tracks which reminders already fired in
+                              localStorage to avoid duplicates.
+
+  hooks/useCountdown.ts        requestAnimationFrame-driven hook (~30
+                              updates/sec) that computes remaining time to a
+                              deadline and returns an ordered list of
+                              display segments: leading-zero large units
+                              (years/months/weeks/days) are suppressed, but
+                              hours/minutes/seconds/milliseconds are ALWAYS
+                              included so every card visibly ticks down to
+                              the millisecond regardless of how far out the
+                              deadline is.
+
+  lib/api.ts                   fetch() wrapper: fetchTasks(),
+                              sendChatMessage(), uploadSkill() — all call
+                              `${NEXT_PUBLIC_API_BASE}${path}`.
+  lib/types.ts                  Task / ChatResponse TypeScript interfaces
+                              (must match backend Pydantic schemas).
+  lib/priority.ts                urgencyBand() + urgencyStyles: maps
+                              milliseconds-remaining to a color band.
+
+--------------------------------------------------------------------------------
+6. CONFIGURATION / ENVIRONMENT VARIABLES
+--------------------------------------------------------------------------------
+backend/.env (copy from backend/.env.example):
+  GOOGLE_API_KEY               Gemini API key from https://aistudio.google.com/apikey
+                              Leave blank to use the offline fallback parser.
+  GOOGLE_GENAI_USE_VERTEXAI    FALSE (using Gemini API directly, not Vertex AI)
+  GEMINI_MODEL                gemini-3.8-flash (current default)
+  DATABASE_URL                sqlite:///./hourglass.db  (dev)
+                              or postgresql+psycopg2://... for Cloud SQL (prod)
+  NTFY_TOPIC                  optional; unique topic name for free mobile push
+  CORS_ORIGINS                http://localhost:3000 (comma-separated list)
+
+frontend/.env.local (copy from frontend/.env.example):
+  NEXT_PUBLIC_API_BASE         URL of the running backend, e.g.
+                              http://localhost:8000
+
+--------------------------------------------------------------------------------
+7. RUNNING IT LOCALLY
+--------------------------------------------------------------------------------
+Backend:
+  cd backend
+  python -m venv .venv && source .venv/bin/activate
+  pip install -r requirements.txt
+  cp .env.example .env        # then fill in GOOGLE_API_KEY etc.
+  uvicorn app.main:app --reload --port 8000
+
+Frontend:
+  cd frontend
+  npm install
+  cp .env.example .env.local
+  npm run dev
+
+Then open http://localhost:3000, allow notifications when prompted, and
+type or speak an instruction like:
+  "Add a challenge called Kaggle Sprint due 30 September 6pm"
+
+IMPORTANT: after editing backend/.env, you must fully restart `uvicorn`
+(stop and re-run it). `--reload` only watches .py files, not .env, and
+settings are cached for the life of the process — editing the key alone
+without restarting will keep hitting the offline fallback parser.
+
+--------------------------------------------------------------------------------
+8. DATABASE / GOOGLE CLOUD SQL
+--------------------------------------------------------------------------------
+Local dev uses SQLite with zero setup (backend/hourglass.db). The entire
+app reads its DB connection from DATABASE_URL, so moving to Cloud SQL
+Postgres is a one-line env change, no code change. Commands to provision
+the first Cloud SQL instance (not run yet — requires your own gcloud auth):
+
+  gcloud sql instances create hourglass-db \
+    --database-version=POSTGRES_16 \
+    --tier=db-f1-micro \
+    --region=us-central1
+
+  gcloud sql databases create hourglass --instance=hourglass-db
+
+  gcloud sql users set-password postgres \
+    --instance=hourglass-db --password=<STRONG_PASSWORD>
+
+Then set in backend/.env:
+  DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@/hourglass?host=/cloudsql/<PROJECT>:us-central1:hourglass-db
+
+Deploy backend to Cloud Run with:
+  --add-cloudsql-instances=<PROJECT>:us-central1:hourglass-db
+
+--------------------------------------------------------------------------------
+9. WHAT'S DEFERRED / NOT DONE YET
+--------------------------------------------------------------------------------
+- User authentication / multi-user support (single-tenant right now).
+- Actual provisioning of the Cloud SQL instance (commands given above, not
+  executed — this session has no GCP credentials).
+- Firebase Cloud Messaging / Telegram push (ntfy.sh is wired as the default
+  free option instead; the notification_service.py send() signature is
+  designed to be swapped out later).
+- Automated test suite.
+- CI/CD pipeline.
+- Cloud Run deployment manifests / actual hosting (currently local-only).
+- Embedding the HourGlass UI as a page inside another existing app
+  ("Quizzical" or similar) — pending confirmation of that app's repo
+  location so the frontend components can be ported over, pointed at this
+  backend's URL.
+
+--------------------------------------------------------------------------------
+10. RECENT FIXES IN THIS SESSION
+--------------------------------------------------------------------------------
+- Bumped Next.js to the latest release (16.3.6) and Gemini model default to
+  gemini-3.8-flash (was a stale gemini-2.0-flash).
+- Fixed the offline fallback parser: it was using the word "by" and bare
+  "timer" as text-split anchors, so a task title containing "by" (e.g.
+  "competition by Google") or ending in "set" got misparsed, and relative
+  durations like "40 days" fell through to an absolute-date parser and
+  produced garbage years (e.g. a deadline 14 years out). Added explicit
+  relative-duration parsing ("in N days/weeks/months/years/hours") and
+  restricted anchors to "due" / "deadline" / "set timer".
+- Fixed the countdown clock: previously it dropped hours/seconds/
+  milliseconds entirely once a deadline was more than a day out, so a
+  ~40-day-out task only ever showed a static "14y 0mo 3d"-style label with
+  nothing visibly ticking. Rebuilt to always keep a live h:m:s.ms tail,
+  rendered as individual digit boxes, with larger units (weeks/months/
+  years) shown only when relevant.
+
+================================================================================
+END OF FILE
+================================================================================
